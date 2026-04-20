@@ -10,6 +10,10 @@ FROM node:20-alpine AS runtime
 WORKDIR /app
 ENV NODE_ENV=production
 
+# ffmpeg do sistema é fallback caso o binário do ffmpeg-static não rode no Alpine.
+# libstdc++ é runtime necessário pra alguns binários nativos.
+RUN apk add --no-cache ffmpeg libstdc++
+
 # Dependências
 COPY --from=deps /app/node_modules ./node_modules
 COPY package*.json ./

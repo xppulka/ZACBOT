@@ -12,6 +12,7 @@ const { clearRedisAuthState, hasRedisAuthState } = require('./redisAuthState');
 const { redis } = require('../utils/redis');
 const logger = require('../utils/logger');
 const config = require('../config');
+const { convertToOggOpus } = require('../utils/audio');
 
 const ACTIVE_SET = 'wa:sessions:active';
 
@@ -172,6 +173,29 @@ async function sendAudioMessage(userId, number, audioBuffer, mimeType) {
   const jid = await resolveSendJid(record.sock, number, log);
   record.lastActivityAt = Date.now();
 
+  // WhatsApp aceita PTT só em OGG/Opus mono. Sempre transcoda — garante
+  // compatibilidade independente do formato vindo do navegador (webm, mp4, mp3, wav…).
+  const incomingMime = (mimeType || '').toLowerCase();
+  const alreadyOgg = incomingMime.includes('ogg') && incomingMime.includes('opus');
+  let finalBuffer = audioBuffer;
+  let finalMime = 'audio/ogg; codecs=opus';
+  if (!alreadyOgg) {
+    try {
+      const converted = await convertToOggOpus(audioBuffer);
+      finalBuffer = converted.buffer;
+      finalMime = converted.mimeType;
+      log.info(
+        { from: incomingMime || 'unknown', inSize: audioBuffer.length, outSize: finalBuffer.length },
+        '🎚️  Áudio convertido para OGG/Opus antes do envio PTT',
+      );
+    } catch (err) {
+      log.error({ err: err.message }, 'Falha ao converter áudio para OGG/Opus');
+      const e = new Error(`Falha ao converter áudio: ${err.message}`);
+      e.code = 'INVALID_AUDIO';
+      throw e;
+    }
+  }
+
   const previous = record.contactQueues.get(jid) || Promise.resolve();
   const next = previous
     .catch(() => {})
@@ -190,13 +214,61 @@ async function sendAudioMessage(userId, number, audioBuffer, mimeType) {
       }
 
       const sent = await record.sock.sendMessage(jid, {
-        audio: audioBuffer,
-        mimetype: mimeType || 'audio/ogg; codecs=opus',
+        audio: finalBuffer,
+        mimetype: finalMime,
         ptt: true,
       });
       log.info(
-        { jid, msgId: sent?.key?.id, sizeBytes: audioBuffer.length },
+        { jid, msgId: sent?.key?.id, sizeBytes: finalBuffer.length },
         '🎙️  Áudio enviado (PTT)'
+      );
+      return { ok: true, to: jid, id: sent?.key?.id };
+    });
+
+  record.contactQueues.set(jid, next);
+  next.finally(() => {
+    if (record.contactQueues.get(jid) === next) {
+      record.contactQueues.delete(jid);
+    }
+  });
+
+  return next;
+}
+
+/**
+ * Envia imagem (jpeg/png/webp) com caption opcional.
+ */
+async function sendImageMessage(userId, number, imageBuffer, mimeType, caption) {
+  const record = sessions.get(userId);
+  if (!record || record.status !== 'connected' || !record.sock) {
+    const err = new Error(`Sessão de ${userId} não está conectada`);
+    err.code = 'SESSION_NOT_CONNECTED';
+    throw err;
+  }
+  if (!Buffer.isBuffer(imageBuffer) || imageBuffer.length === 0) {
+    const err = new Error('imageBuffer vazio ou inválido');
+    err.code = 'INVALID_IMAGE';
+    throw err;
+  }
+
+  const log = logger.child({ userId });
+  const jid = await resolveSendJid(record.sock, number, log);
+  record.lastActivityAt = Date.now();
+
+  const finalMime = (mimeType || 'image/jpeg').toLowerCase();
+
+  const previous = record.contactQueues.get(jid) || Promise.resolve();
+  const next = previous
+    .catch(() => {})
+    .then(async () => {
+      const sent = await record.sock.sendMessage(jid, {
+        image: imageBuffer,
+        mimetype: finalMime,
+        caption: caption || undefined,
+      });
+      log.info(
+        { jid, msgId: sent?.key?.id, sizeBytes: imageBuffer.length, hasCaption: !!caption },
+        '🖼️  Imagem enviada',
       );
       return { ok: true, to: jid, id: sent?.key?.id };
     });
@@ -352,6 +424,7 @@ module.exports = {
   countByStatus,
   sendMessage,
   sendAudioMessage,
+  sendImageMessage,
   stopSession,
   shutdownAll,
   restoreAllSessions,

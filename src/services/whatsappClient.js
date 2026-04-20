@@ -171,19 +171,26 @@ async function handleIncomingMessage({ userId, sock, msg, record, logger }) {
     return;
   }
 
-  const msgType = getMessageType(msg.message);
-  const text = extractText(msg.message);
+  // Desembrulha mensagens efêmeras / view-once antes de inspecionar tipo
+  const innerMessage = unwrapMessage(msg.message);
+  const msgType = getMessageType(innerMessage);
+  const text = extractText(innerMessage);
 
-  // Aceita: texto OU áudio. Outros tipos (imagem/vídeo/etc) por enquanto ignorados.
+  // Aceita: texto, áudio OU imagem. Outros tipos por enquanto ignorados.
   const isAudio = msgType === 'audio';
+  const isImage = msgType === 'image';
   logger.info(
-    { jid: remoteJid, msgType, hasText: !!text, isAudio },
+    { jid: remoteJid, msgType, hasText: !!text, isAudio, isImage },
     '📨 Mensagem recebida (pré-filtro)'
   );
-  if (!text && !isAudio) {
-    logger.info({ remoteJid, msgType }, '⏭️  Mensagem sem texto/áudio, ignorada');
+  if (!text && !isAudio && !isImage) {
+    logger.info({ remoteJid, msgType }, '⏭️  Mensagem sem texto/áudio/imagem, ignorada');
     return;
   }
+
+  // Reescreve msg.message para o conteúdo desembrulhado, pra downloadMediaMessage
+  // funcionar mesmo em ephemeral/viewOnce.
+  const msgForDownload = { ...msg, message: innerMessage };
 
   record.lastActivityAt = Date.now();
 
@@ -233,13 +240,14 @@ async function handleIncomingMessage({ userId, sock, msg, record, logger }) {
   // ÁUDIO: download + envio imediato (não usa debounce)
   if (isAudio) {
     let audioBase64 = null;
-    let mimeType = msg.message.audioMessage?.mimetype || 'audio/ogg';
-    let durationSeconds = msg.message.audioMessage?.seconds || null;
+    const audioNode = innerMessage.audioMessage || {};
+    const mimeType = audioNode.mimetype || 'audio/ogg';
+    const durationSeconds = audioNode.seconds || null;
     let sizeBytes = null;
 
     try {
       const buffer = await downloadMediaMessage(
-        msg,
+        msgForDownload,
         'buffer',
         {},
         { logger: pino({ level: 'silent' }), reuploadRequest: sock.updateMediaMessage }
@@ -280,6 +288,60 @@ async function handleIncomingMessage({ userId, sock, msg, record, logger }) {
       });
     } catch (err) {
       logger.error({ err: err.message }, 'Webhook (áudio) falhou após retries');
+    }
+    return;
+  }
+
+  // IMAGEM: download + envio imediato (caption vai como message)
+  if (isImage) {
+    const imgNode = innerMessage.imageMessage || {};
+    const mimeType = imgNode.mimetype || 'image/jpeg';
+    const caption = imgNode.caption || '';
+    let imageBase64 = null;
+    let sizeBytes = null;
+
+    try {
+      const buffer = await downloadMediaMessage(
+        msgForDownload,
+        'buffer',
+        {},
+        { logger: pino({ level: 'silent' }), reuploadRequest: sock.updateMediaMessage }
+      );
+      imageBase64 = buffer.toString('base64');
+      sizeBytes = buffer.length;
+      logger.info(
+        { jid: remoteJid, sizeBytes, mimeType, hasCaption: !!caption },
+        '🖼️  Imagem baixada'
+      );
+    } catch (err) {
+      logger.error({ err: err.message, jid: remoteJid }, 'Falha ao baixar imagem');
+      return;
+    }
+
+    try {
+      await sendToWebhook(config.webhookUrl, {
+        userId,
+        messageId: msg.key.id,
+        from: remoteJid.split('@')[0],
+        jid: remoteJid,
+        fromName: msg.pushName || null,
+        profilePicUrl,
+        phoneNumber,
+        message: caption,
+        messageType: 'image',
+        imageBase64,
+        imageMimeType: mimeType,
+        imageSizeBytes: sizeBytes,
+        timestamp:
+          typeof msg.messageTimestamp === 'number'
+            ? msg.messageTimestamp * 1000
+            : Date.now(),
+        isReply: false,
+        quotedMessageId: null,
+        groupedCount: 1,
+      });
+    } catch (err) {
+      logger.error({ err: err.message }, 'Webhook (imagem) falhou após retries');
     }
     return;
   }
@@ -404,6 +466,20 @@ function getMessageType(message) {
   if (message.contactMessage) return 'contact';
   if (message.buttonsResponseMessage || message.listResponseMessage) return 'interactive';
   return 'unknown';
+}
+
+/**
+ * Desembrulha mensagens embrulhadas em ephemeral/viewOnce/documentWithCaption.
+ * Retorna o sub-objeto real de conteúdo pra getMessageType e downloadMediaMessage
+ * funcionarem corretamente.
+ */
+function unwrapMessage(message) {
+  if (!message) return message;
+  if (message.ephemeralMessage?.message) return unwrapMessage(message.ephemeralMessage.message);
+  if (message.viewOnceMessage?.message) return unwrapMessage(message.viewOnceMessage.message);
+  if (message.viewOnceMessageV2?.message) return unwrapMessage(message.viewOnceMessageV2.message);
+  if (message.documentWithCaptionMessage?.message) return unwrapMessage(message.documentWithCaptionMessage.message);
+  return message;
 }
 
 function lookupReason(code) {

@@ -135,6 +135,65 @@ router.post('/send-audio', validateUserIdBody, async (req, res, next) => {
 });
 
 /**
+ * POST /session/send-image
+ * body: { userId, number, imageBase64, mimeType?, caption? }
+ * Envia imagem (jpeg/png/webp) com legenda opcional.
+ */
+router.post('/send-image', validateUserIdBody, async (req, res, next) => {
+  try {
+    const { userId, number, imageBase64, mimeType, caption } = req.body || {};
+    if (!number || !imageBase64) {
+      return res.status(400).json({
+        error: 'missing_fields',
+        required: ['number', 'imageBase64'],
+      });
+    }
+    if (typeof imageBase64 !== 'string' || imageBase64.length > 28_000_000) {
+      return res.status(400).json({
+        error: 'invalid_image',
+        message: 'imageBase64 deve ser string até ~20MB',
+      });
+    }
+    if (caption != null && (typeof caption !== 'string' || caption.length > 1024)) {
+      return res.status(400).json({
+        error: 'invalid_caption',
+        message: 'caption deve ser string até 1024 chars',
+      });
+    }
+
+    let buffer;
+    try {
+      buffer = Buffer.from(imageBase64, 'base64');
+    } catch {
+      return res.status(400).json({ error: 'invalid_base64' });
+    }
+    if (buffer.length === 0) {
+      return res.status(400).json({ error: 'empty_image' });
+    }
+    if (buffer.length > 16 * 1024 * 1024) {
+      return res.status(400).json({
+        error: 'image_too_large',
+        message: 'Imagem acima de 16MB não é suportada',
+      });
+    }
+
+    const result = await sessionManager.sendImageMessage(
+      userId,
+      number,
+      buffer,
+      typeof mimeType === 'string' ? mimeType : null,
+      typeof caption === 'string' ? caption : '',
+    );
+    res.json(result);
+  } catch (err) {
+    if (err.code === 'SESSION_NOT_CONNECTED') {
+      return res.status(409).json({ error: 'session_not_connected', message: err.message });
+    }
+    next(err);
+  }
+});
+
+/**
  * POST /session/stop
  * body: { userId }
  */
