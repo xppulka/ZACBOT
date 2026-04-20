@@ -194,6 +194,73 @@ router.post('/send-image', validateUserIdBody, async (req, res, next) => {
 });
 
 /**
+ * POST /session/presence
+ * body: { userId, jid, presence }
+ *   presence: 'available' | 'unavailable' | 'composing' | 'recording' | 'paused'
+ * Envia presença pro contato (digitando, online, offline...) e subscribe
+ * pra começar a receber a presença do outro lado.
+ */
+router.post('/presence', validateUserIdBody, async (req, res, next) => {
+  try {
+    const { userId, jid, presence } = req.body || {};
+    if (!jid || !presence) {
+      return res.status(400).json({ error: 'missing_fields', required: ['jid', 'presence'] });
+    }
+    if (typeof jid !== 'string' || jid.length > 150) {
+      return res.status(400).json({ error: 'invalid_jid' });
+    }
+    const result = await sessionManager.sendPresenceUpdate(userId, jid, presence);
+    res.json(result);
+  } catch (err) {
+    if (err.code === 'SESSION_NOT_CONNECTED') {
+      return res.status(409).json({ error: 'session_not_connected', message: err.message });
+    }
+    if (err.code === 'INVALID_PRESENCE') {
+      return res.status(400).json({ error: 'invalid_presence', message: err.message });
+    }
+    next(err);
+  }
+});
+
+/**
+ * POST /session/mark-read
+ * body: { userId, messageKeys: [{ remoteJid, id, fromMe?, participant? }] }
+ * Marca mensagens como lidas (envia read receipt — duplo check azul).
+ */
+router.post('/mark-read', validateUserIdBody, async (req, res, next) => {
+  try {
+    const { userId, messageKeys } = req.body || {};
+    if (!Array.isArray(messageKeys)) {
+      return res.status(400).json({ error: 'missing_fields', required: ['messageKeys[]'] });
+    }
+    if (messageKeys.length > 200) {
+      return res.status(400).json({ error: 'too_many_keys', message: 'máx 200 keys por chamada' });
+    }
+    const result = await sessionManager.markMessagesAsRead(userId, messageKeys);
+    res.json(result);
+  } catch (err) {
+    if (err.code === 'SESSION_NOT_CONNECTED') {
+      return res.status(409).json({ error: 'session_not_connected', message: err.message });
+    }
+    next(err);
+  }
+});
+
+/**
+ * GET /session/contact-presence/:userId/:jid
+ * Retorna a última presença conhecida do contato (cache em RAM, TTL 30s).
+ * Resposta: { jid, status, lastUpdate } ou { jid, status: null }
+ */
+router.get('/contact-presence/:userId/:jid', validateUserIdParam, (req, res) => {
+  const { userId, jid } = req.params;
+  if (!jid || jid.length > 150) {
+    return res.status(400).json({ error: 'invalid_jid' });
+  }
+  const presence = sessionManager.getContactPresence(userId, jid);
+  res.json({ jid, ...(presence ?? { status: null }) });
+});
+
+/**
  * POST /session/stop
  * body: { userId }
  */

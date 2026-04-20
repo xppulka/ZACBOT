@@ -1,6 +1,6 @@
 {
   "name": "whatsapp-baileys-backend",
-  "version": "5.3.1",
+  "version": "5.4.1",
   "description": "Backend multiusuário de WhatsApp Web (Baileys) com persistência em Redis",
   "main": "src/server.js",
   "type": "commonjs",

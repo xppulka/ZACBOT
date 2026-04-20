@@ -22,6 +22,7 @@ const pino = require('pino');
 const { sendToWebhook } = require('../utils/webhook');
 const { useRedisAuthState, clearRedisAuthState } = require('./redisAuthState');
 const { redis } = require('../utils/redis');
+const presenceManager = require('./presenceManager');
 const config = require('../config');
 
 const ACTIVE_SET = 'wa:sessions:active';
@@ -145,6 +146,22 @@ async function createWhatsAppClient({ userId, record, logger }) {
       } catch (err) {
         logger.error({ err: err.message }, 'Erro ao processar mensagem recebida');
       }
+    }
+  });
+
+  // Presença do contato (digitando / online / offline)
+  sock.ev.on('presence.update', ({ id, presences }) => {
+    if (!id || !presences) return;
+    // Para chats 1-1, há apenas uma entrada (o próprio contato)
+    for (const participant of Object.keys(presences)) {
+      const p = presences[participant];
+      if (!p?.lastKnownPresence) continue;
+      // lastKnownPresence: 'available' | 'unavailable' | 'composing' | 'recording' | 'paused'
+      presenceManager.setPresence(userId, id, p.lastKnownPresence);
+      logger.debug(
+        { jid: id, participant, presence: p.lastKnownPresence },
+        '👁️  Presença do contato atualizada',
+      );
     }
   });
 

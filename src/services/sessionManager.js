@@ -10,6 +10,7 @@
 const { createWhatsAppClient } = require('./whatsappClient');
 const { clearRedisAuthState, hasRedisAuthState } = require('./redisAuthState');
 const { redis } = require('../utils/redis');
+const presenceManager = require('./presenceManager');
 const logger = require('../utils/logger');
 const config = require('../config');
 const { convertToOggOpus } = require('../utils/audio');
@@ -283,6 +284,81 @@ async function sendImageMessage(userId, number, imageBuffer, mimeType, caption) 
   return next;
 }
 
+/**
+ * Envia uma atualização de presença pro contato.
+ * presence: 'available' | 'unavailable' | 'composing' | 'recording' | 'paused'
+ * Também subscribe na presença do contato (pra começar a receber updates dele).
+ */
+async function sendPresenceUpdate(userId, number, presence) {
+  const record = sessions.get(userId);
+  if (!record || record.status !== 'connected' || !record.sock) {
+    const err = new Error(`Sessão de ${userId} não está conectada`);
+    err.code = 'SESSION_NOT_CONNECTED';
+    throw err;
+  }
+  const validPresences = ['available', 'unavailable', 'composing', 'recording', 'paused'];
+  if (!validPresences.includes(presence)) {
+    const err = new Error(`Presence inválido: ${presence}`);
+    err.code = 'INVALID_PRESENCE';
+    throw err;
+  }
+
+  // Normaliza JID — não precisa resolver via onWhatsApp pra presence
+  const jid = typeof number === 'string' && number.includes('@')
+    ? number
+    : `${String(number).replace(/\D/g, '')}@s.whatsapp.net`;
+
+  try {
+    // Subscribe pra começar a receber a presença do outro lado
+    await record.sock.presenceSubscribe(jid).catch(() => {});
+    await record.sock.sendPresenceUpdate(presence, jid);
+    record.lastActivityAt = Date.now();
+    return { ok: true, jid, presence };
+  } catch (err) {
+    logger.warn({ err: err.message, userId, jid, presence }, 'Falha em sendPresenceUpdate');
+    throw err;
+  }
+}
+
+/**
+ * Marca mensagens como lidas (envia read receipt — duplo check azul).
+ * messageKeys: array de { remoteJid, id, fromMe?, participant? }
+ */
+async function markMessagesAsRead(userId, messageKeys) {
+  const record = sessions.get(userId);
+  if (!record || record.status !== 'connected' || !record.sock) {
+    const err = new Error(`Sessão de ${userId} não está conectada`);
+    err.code = 'SESSION_NOT_CONNECTED';
+    throw err;
+  }
+  if (!Array.isArray(messageKeys) || messageKeys.length === 0) {
+    return { ok: true, markedCount: 0 };
+  }
+
+  // Filtra chaves válidas (precisa pelo menos remoteJid + id, e não pode ser fromMe)
+  const validKeys = messageKeys
+    .filter((k) => k && typeof k.remoteJid === 'string' && typeof k.id === 'string' && !k.fromMe)
+    .map((k) => ({
+      remoteJid: k.remoteJid,
+      id: k.id,
+      ...(k.participant ? { participant: k.participant } : {}),
+    }));
+
+  if (validKeys.length === 0) {
+    return { ok: true, markedCount: 0 };
+  }
+
+  try {
+    await record.sock.readMessages(validKeys);
+    record.lastActivityAt = Date.now();
+    logger.info({ userId, count: validKeys.length }, '✓✓ Mensagens marcadas como lidas');
+    return { ok: true, markedCount: validKeys.length };
+  } catch (err) {
+    logger.warn({ err: err.message, userId }, 'Falha em readMessages');
+    throw err;
+  }
+}
+
 async function stopSession(userId) {
   const record = sessions.get(userId);
   if (record) {
@@ -425,6 +501,9 @@ module.exports = {
   sendMessage,
   sendAudioMessage,
   sendImageMessage,
+  sendPresenceUpdate,
+  markMessagesAsRead,
+  getContactPresence: (userId, jid) => presenceManager.getPresence(userId, jid),
   stopSession,
   shutdownAll,
   restoreAllSessions,
