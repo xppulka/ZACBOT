@@ -28,7 +28,14 @@ app.get('/health', async (_req, res) => {
     sessions: sessionManager.countByStatus(),
     dlqSize: dlq,
     uptime: process.uptime(),
-    version: '5.3.0',
+    version: '5.3.1',
+    // marcador único para confirmar deploy no Railway
+    build: 'inbound-media-base64-FIX-2026-04-20',
+    features: {
+      inboundAudioBase64: true,
+      inboundImageBase64: true,
+      outboundImage: true,
+    },
   });
 });
 
@@ -43,7 +50,7 @@ app.use((err, _req, res, _next) => {
 
 const server = app.listen(config.port, async () => {
   logger.info('================================================');
-  logger.info('🟢 BACKEND v5.3.0 — Send image outbound + imagem/áudio inbound');
+  logger.info('🟢 BACKEND v5.3.1 — build inbound-media-base64-FIX-2026-04-20');
   logger.info(`🚀 Escutando em :${config.port}`);
   logger.info('================================================');
 
