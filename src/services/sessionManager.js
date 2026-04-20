@@ -110,7 +110,7 @@ async function sendMessage(userId, number, message) {
     throw err;
   }
 
-  const jid = normalizeJid(number);
+  const jid = await resolveSendJid(record.sock, number, logger.child({ userId }));
   record.lastActivityAt = Date.now();
 
   const previous = record.contactQueues.get(jid) || Promise.resolve();
@@ -235,6 +235,49 @@ function normalizeJid(number) {
   if (number.includes('@')) return number;
   const digits = number.replace(/\D/g, '');
   return `${digits}@s.whatsapp.net`;
+}
+
+/**
+ * Resolve o JID real para envio.
+ *
+ * - Grupos (@g.us) e LIDs (@lid) são preservados — Baileys envia direto.
+ * - Números (com ou sem @s.whatsapp.net) são confirmados via onWhatsApp(),
+ *   pois um JID “sintético” com dígitos errados (ex: vindo de mensagem com
+ *   senderLid) é aceito pelo socket mas o WhatsApp descarta silenciosamente.
+ */
+async function resolveSendJid(sock, number, log) {
+  const initial = normalizeJid(number);
+
+  if (initial.endsWith('@g.us') || initial.endsWith('@lid')) {
+    return initial;
+  }
+
+  const digits = initial.split('@')[0];
+  try {
+    const results = await sock.onWhatsApp(digits);
+    log.info(
+      { requested: initial, digits, results },
+      '🔎 onWhatsApp result',
+    );
+    const match = Array.isArray(results) ? results.find((r) => r && r.exists) : null;
+    if (match && match.jid) {
+      log.info(
+        { requested: initial, resolved: match.jid },
+        '✅ JID confirmado no WhatsApp',
+      );
+      return match.jid;
+    }
+    log.error(
+      { requested: initial, results },
+      '❌ NÚMERO NÃO EXISTE NO WHATSAPP — envio será descartado pelo servidor',
+    );
+  } catch (err) {
+    log.warn(
+      { err: err.message, requested: initial },
+      'Falha em onWhatsApp; usando JID literal',
+    );
+  }
+  return initial;
 }
 
 function sleep(ms) {

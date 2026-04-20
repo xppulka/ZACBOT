@@ -28,7 +28,7 @@ app.get('/health', async (_req, res) => {
     sessions: sessionManager.countByStatus(),
     dlqSize: dlq,
     uptime: process.uptime(),
-    version: '2.0.0',
+    version: '3.0.0',
   });
 });
 
@@ -42,7 +42,10 @@ app.use((err, _req, res, _next) => {
 });
 
 const server = app.listen(config.port, async () => {
-  logger.info(`🚀 Backend WhatsApp escutando em :${config.port}`);
+  logger.info('================================================');
+  logger.info('🟢 BACKEND v3.0.0 — com resolveSendJid + onWhatsApp logs');
+  logger.info(`🚀 Escutando em :${config.port}`);
+  logger.info('================================================');
 
   try {
     const restored = await sessionManager.restoreAllSessions();
