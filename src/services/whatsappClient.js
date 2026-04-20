@@ -211,7 +211,7 @@ async function handleIncomingMessage({ userId, sock, msg, record, logger }) {
     const from = remoteJid.split('@')[0];
 
     logger.info(
-      { from, count: grouped.length, preview: combinedText.slice(0, 80) },
+      { from, jid: remoteJid, count: grouped.length, preview: combinedText.slice(0, 80) },
       '📩 Mensagem(ns) recebida(s) — flushing buffer'
     );
 
@@ -225,7 +225,8 @@ async function handleIncomingMessage({ userId, sock, msg, record, logger }) {
       response = await sendToWebhook(config.webhookUrl, {
         userId,
         messageId: last.messageId,
-        from,
+        from,           // só os dígitos (compat retro)
+        jid: remoteJid, // JID completo com sufixo (@s.whatsapp.net ou @lid)
         fromName: last.fromName,
         message: combinedText,
         messageType: last.messageType,

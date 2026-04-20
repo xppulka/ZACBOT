@@ -231,6 +231,7 @@ function publicState(record) {
 
 function normalizeJid(number) {
   if (typeof number !== 'string') number = String(number);
+  // Já tem sufixo? respeita (@s.whatsapp.net, @lid, @g.us)
   if (number.includes('@')) return number;
   const digits = number.replace(/\D/g, '');
   return `${digits}@s.whatsapp.net`;
