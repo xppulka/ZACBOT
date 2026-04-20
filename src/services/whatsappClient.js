@@ -13,6 +13,7 @@ const {
   default: makeWASocket,
   fetchLatestBaileysVersion,
   DisconnectReason,
+  downloadMediaMessage,
 } = require('@whiskeysockets/baileys');
 const { Boom } = require('@hapi/boom');
 const QRCode = require('qrcode');
@@ -170,9 +171,17 @@ async function handleIncomingMessage({ userId, sock, msg, record, logger }) {
     return;
   }
 
+  const msgType = getMessageType(msg.message);
   const text = extractText(msg.message);
-  if (!text) {
-    logger.debug({ remoteJid }, 'Mensagem sem texto, ignorada');
+
+  // Aceita: texto OU áudio. Outros tipos (imagem/vídeo/etc) por enquanto ignorados.
+  const isAudio = msgType === 'audio';
+  logger.info(
+    { jid: remoteJid, msgType, hasText: !!text, isAudio },
+    '📨 Mensagem recebida (pré-filtro)'
+  );
+  if (!text && !isAudio) {
+    logger.info({ remoteJid, msgType }, '⏭️  Mensagem sem texto/áudio, ignorada');
     return;
   }
 
@@ -184,6 +193,98 @@ async function handleIncomingMessage({ userId, sock, msg, record, logger }) {
     /* ignore */
   }
 
+  // Tenta buscar foto de perfil (pode falhar se contato bloqueou ou não tem)
+  let profilePicUrl = null;
+  try {
+    profilePicUrl = await sock.profilePictureUrl(remoteJid, 'image');
+  } catch (e) {
+    logger.debug({ jid: remoteJid, err: e.message }, 'Sem foto de perfil disponível');
+  }
+
+  // Resolve número real do contato:
+  //  1. Se JID já é @s.whatsapp.net → usa os dígitos
+  //  2. Se vier `key.senderPn` (Baileys novo, mensagens vindas via @lid) → usa
+  //  3. Caso contrário, tenta onWhatsApp (com cache por JID em record.lidPhoneCache)
+  let phoneNumber = null;
+  if (remoteJid.endsWith('@s.whatsapp.net')) {
+    phoneNumber = remoteJid.split('@')[0];
+  } else if (msg.key?.senderPn && typeof msg.key.senderPn === 'string') {
+    phoneNumber = msg.key.senderPn.split('@')[0].replace(/\D/g, '') || null;
+  } else if (remoteJid.endsWith('@lid')) {
+    if (!record.lidPhoneCache) record.lidPhoneCache = new Map();
+    if (record.lidPhoneCache.has(remoteJid)) {
+      phoneNumber = record.lidPhoneCache.get(remoteJid);
+    } else {
+      try {
+        const lidDigits = remoteJid.split('@')[0];
+        const results = await sock.onWhatsApp(lidDigits);
+        const match = Array.isArray(results) ? results.find((r) => r && r.exists) : null;
+        if (match?.jid && typeof match.jid === 'string') {
+          phoneNumber = match.jid.split('@')[0];
+          record.lidPhoneCache.set(remoteJid, phoneNumber);
+          logger.info({ lid: remoteJid, phoneNumber }, '🔎 LID → phone resolvido');
+        }
+      } catch (err) {
+        logger.debug({ err: err.message, jid: remoteJid }, 'onWhatsApp para @lid falhou');
+      }
+    }
+  }
+
+  // ÁUDIO: download + envio imediato (não usa debounce)
+  if (isAudio) {
+    let audioBase64 = null;
+    let mimeType = msg.message.audioMessage?.mimetype || 'audio/ogg';
+    let durationSeconds = msg.message.audioMessage?.seconds || null;
+    let sizeBytes = null;
+
+    try {
+      const buffer = await downloadMediaMessage(
+        msg,
+        'buffer',
+        {},
+        { logger: pino({ level: 'silent' }), reuploadRequest: sock.updateMediaMessage }
+      );
+      audioBase64 = buffer.toString('base64');
+      sizeBytes = buffer.length;
+      logger.info(
+        { jid: remoteJid, sizeBytes, durationSeconds, mimeType },
+        '🎙️  Áudio baixado'
+      );
+    } catch (err) {
+      logger.error({ err: err.message, jid: remoteJid }, 'Falha ao baixar áudio');
+      return;
+    }
+
+    try {
+      await sendToWebhook(config.webhookUrl, {
+        userId,
+        messageId: msg.key.id,
+        from: remoteJid.split('@')[0],
+        jid: remoteJid,
+        fromName: msg.pushName || null,
+        profilePicUrl,
+        phoneNumber,
+        message: '',
+        messageType: 'audio',
+        audioBase64,
+        audioMimeType: mimeType,
+        audioDurationSeconds: durationSeconds,
+        audioSizeBytes: sizeBytes,
+        timestamp:
+          typeof msg.messageTimestamp === 'number'
+            ? msg.messageTimestamp * 1000
+            : Date.now(),
+        isReply: false,
+        quotedMessageId: null,
+        groupedCount: 1,
+      });
+    } catch (err) {
+      logger.error({ err: err.message }, 'Webhook (áudio) falhou após retries');
+    }
+    return;
+  }
+
+  // TEXTO: debounce normal
   const messageMeta = {
     messageId: msg.key.id,
     text,
@@ -192,10 +293,12 @@ async function handleIncomingMessage({ userId, sock, msg, record, logger }) {
         ? msg.messageTimestamp * 1000
         : Date.now(),
     fromName: msg.pushName || null,
+    profilePicUrl,
+    phoneNumber,
     isReply: !!msg.message?.extendedTextMessage?.contextInfo?.quotedMessage,
     quotedMessageId:
       msg.message?.extendedTextMessage?.contextInfo?.stanzaId || null,
-    messageType: getMessageType(msg.message),
+    messageType: msgType,
   };
 
   // Debounce: junta mensagens do mesmo contato em rajada
@@ -228,6 +331,8 @@ async function handleIncomingMessage({ userId, sock, msg, record, logger }) {
         from,           // só os dígitos (compat retro)
         jid: remoteJid, // JID completo com sufixo (@s.whatsapp.net ou @lid)
         fromName: last.fromName,
+        profilePicUrl: last.profilePicUrl,
+        phoneNumber: last.phoneNumber,
         message: combinedText,
         messageType: last.messageType,
         timestamp: last.timestamp,

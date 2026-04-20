@@ -28,7 +28,7 @@ app.get('/health', async (_req, res) => {
     sessions: sessionManager.countByStatus(),
     dlqSize: dlq,
     uptime: process.uptime(),
-    version: '3.0.0',
+    version: '4.0.0',
   });
 });
 
@@ -43,7 +43,7 @@ app.use((err, _req, res, _next) => {
 
 const server = app.listen(config.port, async () => {
   logger.info('================================================');
-  logger.info('🟢 BACKEND v3.0.0 — com resolveSendJid + onWhatsApp logs');
+  logger.info('🟢 BACKEND v4.0.0 — com suporte a ÁUDIO (downloadMediaMessage)');
   logger.info(`🚀 Escutando em :${config.port}`);
   logger.info('================================================');
 
