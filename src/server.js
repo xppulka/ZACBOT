@@ -28,7 +28,7 @@ app.get('/health', async (_req, res) => {
     sessions: sessionManager.countByStatus(),
     dlqSize: dlq,
     uptime: process.uptime(),
-    version: '4.1.0',
+    version: '5.0.0',
   });
 });
 
@@ -43,7 +43,7 @@ app.use((err, _req, res, _next) => {
 
 const server = app.listen(config.port, async () => {
   logger.info('================================================');
-  logger.info('🟢 BACKEND v4.1.0 — receber + enviar ÁUDIO (PTT)');
+  logger.info('🟢 BACKEND v5.0.0 — receber + enviar ÁUDIO (PTT)');
   logger.info(`🚀 Escutando em :${config.port}`);
   logger.info('================================================');
 
