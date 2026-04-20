@@ -1,5 +1,7 @@
 # Multi-stage build pra imagem final pequena
 FROM node:20-alpine AS deps
+# git é necessário pq o Baileys (e algumas libs) podem vir de repositórios git
+RUN apk add --no-cache git python3 make g++
 WORKDIR /app
 COPY package*.json ./
 RUN npm install --omit=dev --no-audit --no-fund
