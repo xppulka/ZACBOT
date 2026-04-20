@@ -150,6 +150,67 @@ async function sendMessage(userId, number, message) {
   return next;
 }
 
+/**
+ * Envia áudio (PTT — push-to-talk / mensagem de voz) pra um contato.
+ * audioBuffer: Buffer com o conteúdo do áudio (ogg/opus de preferência).
+ * mimeType: opcional, default 'audio/ogg; codecs=opus'.
+ */
+async function sendAudioMessage(userId, number, audioBuffer, mimeType) {
+  const record = sessions.get(userId);
+  if (!record || record.status !== 'connected' || !record.sock) {
+    const err = new Error(`Sessão de ${userId} não está conectada`);
+    err.code = 'SESSION_NOT_CONNECTED';
+    throw err;
+  }
+  if (!Buffer.isBuffer(audioBuffer) || audioBuffer.length === 0) {
+    const err = new Error('audioBuffer vazio ou inválido');
+    err.code = 'INVALID_AUDIO';
+    throw err;
+  }
+
+  const log = logger.child({ userId });
+  const jid = await resolveSendJid(record.sock, number, log);
+  record.lastActivityAt = Date.now();
+
+  const previous = record.contactQueues.get(jid) || Promise.resolve();
+  const next = previous
+    .catch(() => {})
+    .then(async () => {
+      try {
+        await record.sock.presenceSubscribe(jid);
+        await record.sock.sendPresenceUpdate('recording', jid);
+      } catch (e) {
+        log.warn({ err: e.message, jid }, 'Falha em presence recording');
+      }
+
+      try {
+        await record.sock.sendPresenceUpdate('paused', jid);
+      } catch {
+        /* ignore */
+      }
+
+      const sent = await record.sock.sendMessage(jid, {
+        audio: audioBuffer,
+        mimetype: mimeType || 'audio/ogg; codecs=opus',
+        ptt: true,
+      });
+      log.info(
+        { jid, msgId: sent?.key?.id, sizeBytes: audioBuffer.length },
+        '🎙️  Áudio enviado (PTT)'
+      );
+      return { ok: true, to: jid, id: sent?.key?.id };
+    });
+
+  record.contactQueues.set(jid, next);
+  next.finally(() => {
+    if (record.contactQueues.get(jid) === next) {
+      record.contactQueues.delete(jid);
+    }
+  });
+
+  return next;
+}
+
 async function stopSession(userId) {
   const record = sessions.get(userId);
   if (record) {
@@ -290,6 +351,7 @@ module.exports = {
   listSessions,
   countByStatus,
   sendMessage,
+  sendAudioMessage,
   stopSession,
   shutdownAll,
   restoreAllSessions,

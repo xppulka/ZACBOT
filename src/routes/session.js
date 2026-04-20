@@ -80,6 +80,61 @@ router.post('/send', validateUserIdBody, async (req, res, next) => {
 });
 
 /**
+ * POST /session/send-audio
+ * body: { userId, number, audioBase64, mimeType? }
+ * Envia áudio como mensagem de voz (PTT) no WhatsApp.
+ */
+router.post('/send-audio', validateUserIdBody, async (req, res, next) => {
+  try {
+    const { userId, number, audioBase64, mimeType } = req.body || {};
+    if (!number || !audioBase64) {
+      return res.status(400).json({
+        error: 'missing_fields',
+        required: ['number', 'audioBase64'],
+      });
+    }
+    if (typeof audioBase64 !== 'string' || audioBase64.length > 28_000_000) {
+      return res.status(400).json({
+        error: 'invalid_audio',
+        message: 'audioBase64 deve ser string até ~20MB',
+      });
+    }
+
+    let buffer;
+    try {
+      buffer = Buffer.from(audioBase64, 'base64');
+    } catch {
+      return res.status(400).json({ error: 'invalid_base64' });
+    }
+    if (buffer.length === 0) {
+      return res.status(400).json({ error: 'empty_audio' });
+    }
+    if (buffer.length > 16 * 1024 * 1024) {
+      return res.status(400).json({
+        error: 'audio_too_large',
+        message: 'Áudio acima de 16MB não é suportado',
+      });
+    }
+
+    const result = await sessionManager.sendAudioMessage(
+      userId,
+      number,
+      buffer,
+      typeof mimeType === 'string' ? mimeType : null
+    );
+    res.json(result);
+  } catch (err) {
+    if (err.code === 'SESSION_NOT_CONNECTED') {
+      return res.status(409).json({ error: 'session_not_connected', message: err.message });
+    }
+    if (err.code === 'INVALID_AUDIO') {
+      return res.status(400).json({ error: 'invalid_audio', message: err.message });
+    }
+    next(err);
+  }
+});
+
+/**
  * POST /session/stop
  * body: { userId }
  */
