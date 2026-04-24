@@ -211,11 +211,9 @@ async function handleIncomingMessage({ userId, sock, msg, record, logger }) {
 
   record.lastActivityAt = Date.now();
 
-  try {
-    await sock.readMessages([msg.key]);
-  } catch {
-    /* ignore */
-  }
+  // NOTA: NÃO marcamos como lida aqui. O backend Lovable agenda a leitura
+  // com delay aleatório (3-8s) via /session/mark-read pra evitar comportamento
+  // robótico de "visto instantâneo" assim que a mensagem chega.
 
   // Tenta buscar foto de perfil (pode falhar se contato bloqueou ou não tem)
   let profilePicUrl = null;
